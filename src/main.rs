@@ -1,14 +1,12 @@
 extern crate loc;
 
-#[macro_use]
-extern crate clap;
 extern crate deque;
 extern crate num_cpus;
 extern crate regex;
 extern crate ignore;
 extern crate edit_distance;
 
-use clap::{Arg, App, AppSettings};
+use clap::{Arg, Command, ArgAction};
 use ignore::WalkBuilder;
 
 use std::collections::HashMap;
@@ -102,55 +100,65 @@ impl FromStr for Sort {
 // TODO(cgag): tune smallvec array sizes
 // TODO(cgag): try smallstring
 // TODO(cgag): more tests for nested comments
-fn main() {
-    let matches = App::new("loc")
-        .global_settings(&[AppSettings::ColoredHelp])
-        .version(crate_version!())
+fn cli() -> Command {
+    Command::new("loc")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Curtis Gagliardi <curtis@curtis.io>")
         .about("counts things quickly hopefully")
-        .arg(Arg::with_name("exclude")
-            .required(false)
-            .multiple(true)
-            .long("exclude")
-            .value_name("REGEX")
-            .takes_value(true)
-            .help("Rust regex of files to exclude"))
-        .arg(Arg::with_name("include")
-            .required(false)
-            .multiple(true)
-            .long("include")
-            .value_name("REGEX")
-            .takes_value(true)
-            .help("Rust regex matching files to include. Anything not matched will be excluded"))
-        .arg(Arg::with_name("files")
-             .required(false)
-             .long("files")
-             .takes_value(false)
-             .help("Show stats for individual files"))
-        .arg(Arg::with_name("sort")
-            .required(false)
-            .long("sort")
-            .value_name("COLUMN")
-            .takes_value(true)
-            .help("Column to sort by"))
-        .arg(Arg::with_name("unrestricted")
-             .required(false)
-             .multiple(true)
-             .long("unrestricted")
-             .short("u")
-             .takes_value(false)
-             .help("A single -u won't respect .gitignore (etc.) files. Two -u flags will additionally count hidden files and directories."))
-        .arg(Arg::with_name("target")
-            .multiple(true)
-            .help("File or directory to count (multiple arguments accepted)"))
-        .get_matches();
+        .arg(
+            Arg::new("exclude")
+                .required(false)
+                .action(ArgAction::Append)
+                .long("exclude")
+                .value_name("REGEX")
+                .help("Rust regex of files to exclude")
+        )
+        .arg(
+            Arg::new("include")
+                .required(false)
+                .action(ArgAction::Append)
+                .long("include")
+                .value_name("REGEX")
+                .help("Rust regex matching files to include. Anything not matched will be excluded")
+        )
+        .arg(
+            Arg::new("files")
+                .required(false)
+                .long("files")
+                .action(ArgAction::SetTrue)
+                .help("Show stats for individual files")
+        )
+        .arg(
+            Arg::new("sort")
+                .required(false)
+                .long("sort")
+                .value_name("COLUMN")
+                .help("Column to sort by")
+        )
+        .arg(
+            Arg::new("unrestricted")
+                .required(false)
+                .action(ArgAction::Count)
+                .long("unrestricted")
+                .short('u')
+                .help("A single -u won't respect .gitignore (etc.) files. Two -u flags will additionally count hidden files and directories.")
+        )
+        .arg(
+            Arg::new("target")
+                .action(ArgAction::Append)
+                .help("File or directory to count (multiple arguments accepted)")
+        )
+}
 
-    let targets = match matches.values_of("target") {
-        Some(targets) => targets.collect(),
-        None => vec!["."]
+fn main() {
+    let matches = cli().get_matches();
+
+    let targets = match matches.get_many::<String>("target") {
+        Some(targets) => targets.map(|s| s.clone()).collect(),
+        None => vec![".".to_string()]
     };
 
-    let sort: Sort = match matches.value_of("sort") {
+    let sort: Sort = match matches.get_one::<String>("sort") {
         Some(string) => match Sort::from_str(string) {
             Ok(sort) => sort,
             Err(err) => {
@@ -169,20 +177,20 @@ fn main() {
         None => Sort::Code,
     };
 
-    let by_file: bool = matches.is_present("files");
+    let by_file: bool = matches.get_flag("files");
 
     if by_file && (sort == Sort::Language || sort == Sort::Files) {
         println!("Error: cannot sort by Language or Files when --files is present");
         return
     }
 
-    let (use_ignore, ignore_hidden) = match matches.occurrences_of("unrestricted") {
+    let (use_ignore, ignore_hidden) = match matches.get_count("unrestricted") {
         0 => (true,  true),
         1 => (false, true),
         2 => (false, false),
         _ => (false, false),
     };
-    let exclude_regex = match matches.values_of("exclude") {
+    let exclude_regex = match matches.get_many::<String>("exclude") {
         Some(regex_strs) => {
             let combined_regex = regex_strs.map(|r| format!("({})", r)).collect::<Vec<String>>().join("|");
             match Regex::new(&combined_regex) {
@@ -195,7 +203,7 @@ fn main() {
         }
         None => None,
     };
-    let include_regex = match matches.values_of("include") {
+    let include_regex = match matches.get_many::<String>("include") {
         Some(regex_strs) => {
             let combined_regex = regex_strs.map(|r| format!("({})", r)).collect::<Vec<String>>().join("|");
             match Regex::new(&combined_regex) {
@@ -399,4 +407,9 @@ fn print_totals_by_lang(linesep: &str, totals_by_lang: &[(&&Lang, &LangTotal)]) 
              totals.count.comment,
              totals.count.code);
     println!("{}", linesep);
+}
+
+#[test]
+fn verify_cli() {
+    cli().debug_assert();
 }

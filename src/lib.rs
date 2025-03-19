@@ -3,7 +3,6 @@ extern crate smallvec;
 
 use std::path::Path;
 use std::fs::File;
-use std::cmp::{max, min};
 use std::fmt;
 use std::io::prelude::*;
 
@@ -662,40 +661,73 @@ pub fn count(filepath: &str) -> Count {
         let mut pos = 0;
         let mut found_code = 0;
         let line_len = line.len();
-        let contains_utf8 = (0..line_len).any(|i| !line.is_char_boundary(i));
 
-        'outer: while pos < line_len {
+        while pos < line_len {
             for multi in multis.iter() {
-                let (start, end) = multi;
+                let (start, _end) = multi;
                 let start_len = start.len();
-                let end_len   = end.len();
 
-                // TODO(cgag): this is almost ceratinly giving us incorrect results.  Say the
-                // first multi is the longest.  If we advance position because the final byte
-                // position of that multi hits unicode, we might have skipped over a perfectly
-                // valid comment start that was unaffected by the unicode.
-                if contains_utf8 {
-                    for i in pos..pos + min(max(start_len, end_len) + 1, line_len - pos) {
-                        if !line.is_char_boundary(i) {
-                            pos += 1;
-                            continue 'outer;
+                // Convert to characters to properly handle UTF-8
+                let line_chars: Vec<char> = line.chars().collect();
+                // Safely count characters up to this position without slicing
+                let mut char_pos = 0;
+                let mut byte_pos = 0;
+                for c in line.chars() {
+                    if byte_pos >= pos {
+                        break;
+                    }
+                    byte_pos += c.len_utf8();
+                    char_pos += 1;
+                }
+                
+                // Check for comment start
+                if pos + start_len <= line_len && char_pos + start.chars().count() <= line_chars.len() {
+                    let start_chars: Vec<char> = start.chars().collect();
+                    let mut matches = true;
+                    
+                    // Compare start pattern with line characters
+                    if start_chars.len() <= line_chars.len() - char_pos {
+                        for (i, c) in start_chars.iter().enumerate() {
+                            if char_pos + i >= line_chars.len() || &line_chars[char_pos + i] != c {
+                                matches = false;
+                                break;
+                            }
+                        }
+                        
+                        if matches {
+                            // Move position forward by start pattern length
+                            pos += start_len;
+                            multi_stack.push(*multi);
+                            continue;
                         }
                     }
                 }
-
-                if pos + start_len <= line_len && &line[pos..pos + start_len] == *start {
-                    pos += start_len;
-                    multi_stack.push(*multi);
-                    continue;
-                }
-
+                
+                // Check for comment end if in a comment
                 if !multi_stack.is_empty() {
-                    let (_, mut end) = multi_stack.last().expect("stack last");
-                    if pos+end.len() <= line_len && &line[pos..pos+end.len()] == end {
-                        let _ = multi_stack.pop();
-                        pos += end.len();
+                    let (_, end) = multi_stack.last().expect("stack last");
+                    if pos + end.len() <= line_len && char_pos + end.chars().count() <= line_chars.len() {
+                        let end_chars: Vec<char> = end.chars().collect();
+                        let mut matches = true;
+                        
+                        // Compare end pattern with line characters
+                        if end_chars.len() <= line_chars.len() - char_pos {
+                            for (i, c) in end_chars.iter().enumerate() {
+                                if char_pos + i >= line_chars.len() || &line_chars[char_pos + i] != c {
+                                    matches = false;
+                                    break;
+                                }
+                            }
+                            
+                            if matches {
+                                // Move position forward by end pattern length
+                                pos += end.len();
+                                let _ = multi_stack.pop();
+                            }
+                        }
                     }
-                } else if multi_stack.is_empty() && pos < line_len && !&line[pos..pos + 1].chars().next().expect("whitespace check").is_whitespace() {
+                } else if multi_stack.is_empty() && pos < line_len && char_pos < line_chars.len() && 
+                         !line_chars[char_pos].is_whitespace() {
                     found_code += 1;
                 }
             }
